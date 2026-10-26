@@ -1,0 +1,61 @@
+:root {
+  --bg: #0e0e0c;
+  --elevated: #171714;
+  --subtle: #22221c;
+  --fg: #f3f1ea;
+  --muted: #a39e93;
+  --faint: #7d786f;
+  --line: #2e2e27;
+  --accent: #f3f1ea;
+  --accent-fg: #14130f;
+  --warn: #d7b48a;
+  --font: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--fg); font-family: var(--font); }
+button, [role="button"] { cursor: pointer; }
+button { font: inherit; color: inherit; background: transparent; border: 0; }
+:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.wrap { max-width: 72rem; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; align-items: flex-end; border-bottom: 1px solid var(--line); padding-bottom: 1rem; }
+h1 { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
+.eyebrow { margin: 0; color: var(--faint); font-size: 0.875rem; }
+.row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.solid, .quiet, .texty { height: 2.75rem; padding: 0 1rem; border-radius: 0.75rem; font-size: 0.875rem; font-weight: 500; }
+.solid { background: var(--accent); color: var(--accent-fg); }
+.quiet { border: 1px solid var(--line); }
+.texty { color: var(--muted); }
+.lead { max-width: 40rem; color: var(--muted); line-height: 1.5; }
+.grid { display: grid; gap: 1rem; margin-top: 1rem; }
+@media (min-width: 960px) { .grid { grid-template-columns: 22rem 1fr; } }
+.tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.25rem; background: var(--subtle); padding: 0.25rem; border-radius: 0.75rem; }
+.tabs button { height: 2.5rem; border-radius: 0.5rem; color: var(--muted); font-size: 0.875rem; font-weight: 500; }
+.tabs button[aria-selected="true"] { background: var(--elevated); color: var(--fg); }
+.list { display: flex; flex-direction: column; gap: 0.25rem; margin-top: 0.75rem; }
+.item { display: flex; gap: 0.75rem; align-items: center; width: 100%; text-align: left; padding: 0.5rem; border-radius: 0.75rem; }
+.item[aria-pressed="true"] { background: var(--subtle); }
+.item img, .ph { width: 4rem; height: 3rem; object-fit: cover; border-radius: 0.4rem; background: var(--subtle); flex: none; }
+.item .meta { min-width: 0; flex: 1; }
+.item strong, .item span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item span, .note, .hint { color: var(--muted); font-size: 0.875rem; }
+.score { font-family: var(--mono); color: var(--faint); font-size: 0.875rem; }
+.stage { background: var(--elevated); border-radius: 1.25rem; padding: 0.75rem; }
+.viewer { position: relative; background: var(--bg); border-radius: 0.9rem; overflow: hidden; aspect-ratio: 16/9; }
+.viewer video, .viewer img { width: 100%; height: 100%; object-fit: contain; background: #0e0e0c; }
+.clip { position: absolute; inset: 0; }
+.cap { position: absolute; top: 0.5rem; padding: 0.25rem 0.45rem; border-radius: 0.35rem; background: var(--elevated); font-size: 0.75rem; }
+.cap.before { left: 0.5rem; }
+.cap.after { right: 0.5rem; }
+.handle { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--fg); pointer-events: none; }
+.wipe { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: ew-resize; }
+.modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.25rem; margin-bottom: 0.5rem; }
+.bar { height: 4px; background: var(--subtle); border-radius: 99px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--fg); transform-origin: left; }
+input[type="text"] { height: 2.75rem; border-radius: 0.75rem; border: 1px solid var(--line); background: var(--subtle); color: var(--fg); padding: 0 0.8rem; min-width: 16rem; flex: 1; }
+.toast { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); background: var(--accent); color: var(--accent-fg); padding: 0.7rem 1rem; border-radius: 0.75rem; font-size: 0.875rem; }
+.warn { color: var(--warn); }
+fieldset { border: 0; padding: 0; margin: 0.5rem 0 0; }
+label.keep { display: flex; gap: 0.6rem; align-items: center; font-size: 0.875rem; padding: 0.35rem 0; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
