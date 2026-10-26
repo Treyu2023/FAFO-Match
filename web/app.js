@@ -213,6 +213,7 @@ async function ingestFiles(fileList) {
   }
   state.items = items;
   state.result = cluster(items);
+  lockCertain();
   state.tab = state.result.pairs.length ? "pairs" : state.result.copies.length ? "copies" : "alone";
   state.working = "";
   state.note = "";
@@ -239,6 +240,7 @@ async function scanFolder() {
       const items = (job.items || []).map((item) => ({ ...item, id: idOf(item), thumb: "" }));
       state.items = items;
       state.result = cluster(items);
+      lockCertain();
       state.tab = state.result.pairs.length ? "pairs" : state.result.copies.length ? "copies" : "alone";
       state.working = "";
       state.note = job.error || (job.ffmpeg ? "" : "ffmpeg was not found, so renamed upscales need a dropped file to compare frames.");
@@ -483,7 +485,9 @@ function bind() {
   }));
   document.querySelector("#lock")?.addEventListener("click", () => {
     const cur = state.decisions[state.selected];
-    state.decisions[state.selected] = cur === "locked" ? "open" : "locked";
+    const locking = cur !== "locked";
+    state.decisions[state.selected] = locking ? "locked" : "open";
+    if (locking) stampSelected();
     render();
   });
   document.querySelector("#swap")?.addEventListener("click", () => {
@@ -524,8 +528,46 @@ async function recycleCopies() {
   toast(body.recycled?.length ? `Recycled ${body.recycled.length}.` : "Couldn't recycle those files.");
 }
 
+function lockCertain() {
+  for (const pair of state.result.pairs) {
+    if (pair.certain && !state.decisions[pair.id]) state.decisions[pair.id] = "locked";
+  }
+}
+
+function stampSelected() {
+  const pair = state.result.pairs.map(shownPair).find((item) => item.id === state.selected);
+  if (!pair || pair.certain) return;
+  const left = byId(pair.beforeId);
+  const right = byId(pair.afterId);
+  if (!left || !right) return;
+  const taken = new Set(state.items.map((item) => pidOf(item.name) || pidOf(item.path)).filter(Boolean));
+  const pid = pidOf(left.name) || pidOf(left.path) || pidOf(right.name) || pidOf(right.path) || mintPid(taken);
+  const oldLeft = left.path;
+  const oldRight = right.path;
+  left.name = stampPid(left.name, pid);
+  left.path = stampPid(left.path, pid);
+  right.name = stampPid(right.name, pid);
+  right.path = stampPid(right.path, pid);
+  state.result = cluster(state.items);
+  lockCertain();
+  if (state.server) {
+    fetch(`${API}/api/stamp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pid, paths: [oldLeft, oldRight] }),
+    }).catch(() => {});
+  }
+  toast(`Process id ${pid} is on both names.`);
+}
+
 function escapeHtml(value) {
-  return String(value || "").replace(/[&<>"']/g, (ch) => ({ "&": "&", "<": "<", ">": ">", '"': """, "'": "&#39;" }[ch]));
+  return String(value || "").replace(/[&<>"']/g, (ch) => {
+    if (ch === "&") return "&" + "amp;";
+    if (ch === "<") return "&" + "lt;";
+    if (ch === ">") return "&" + "gt;";
+    if (ch === '"') return "&" + "quot;";
+    return "&" + "#39;";
+  });
 }
 function escapeAttr(value) { return escapeHtml(value); }
 

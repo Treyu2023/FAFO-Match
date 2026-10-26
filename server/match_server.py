@@ -197,6 +197,44 @@ def scan(folder: str) -> None:
         _job = {**_job, "phase": "done", "done": total, "total": total, "items": items, "ffmpeg": bool(ffmpeg_bin())}
 
 
+def stamp_name(name: str, pid: str) -> str:
+    pid = pid.lower()
+    if len(pid) != 8:
+        return name
+    dot = name.rfind(".")
+    stem, ext = (name[:dot], name[dot:]) if dot > 0 else (name, "")
+    if f"_PID_{pid}" in stem.lower():
+        return name
+    import re
+
+    stem = re.sub(r"_PID_[0-9a-fA-F]{8}", "", stem).rstrip("._- ") or "clip"
+    return f"{stem}_PID_{pid}{ext}"
+
+
+def stamp_files(pid: str, paths: list[str]) -> dict:
+    pid = str(pid or "").lower().strip()
+    if len(pid) != 8 or any(ch not in "0123456789abcdef" for ch in pid):
+        return {"error": "Process id must be 8 hex characters."}
+    renamed = []
+    failed = []
+    for raw in paths:
+        path = safe_path(raw)
+        if path is None:
+            failed.append(raw)
+            continue
+        dest = path.with_name(stamp_name(path.name, pid))
+        try:
+            if dest != path:
+                if dest.exists():
+                    failed.append(str(path))
+                    continue
+                path.rename(dest)
+            renamed.append(str(dest))
+        except OSError:
+            failed.append(str(path))
+    return {"renamed": renamed, "failed": failed, "pid": pid}
+
+
 def recycle(paths: list[str]) -> dict:
     moved = []
     failed = []
@@ -311,7 +349,10 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=scan, args=(folder,), daemon=True).start()
             self._json(200, {"ok": True})
             return
-        if parsed.path == "/api/recycle":
+        if parsed.path == "/api/stamp":
+            paths = body.get("paths") if isinstance(body.get("paths"), list) else []
+            self._json(200, stamp_files(str(body.get("pid") or ""), [str(p) for p in paths]))
+            return
             paths = body.get("paths") if isinstance(body.get("paths"), list) else []
             self._json(200, recycle([str(p) for p in paths]))
             return

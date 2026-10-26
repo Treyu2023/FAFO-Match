@@ -73,6 +73,34 @@ function durationClose(a, b) {
   return diff < 0.45 || diff / Math.max(a, b) < 0.12;
 }
 
+function pidOf(pathOrName) {
+  const text = String(pathOrName || "");
+  const file = text.match(/_PID_([0-9a-f]{8})(?:_|$)/i) || text.match(/(?:^|[^a-z0-9])PID[_-]([0-9a-f]{8})(?:[^a-z0-9]|$)/i);
+  return file ? file[1].toLowerCase() : "";
+}
+
+function stampPid(filename, pid) {
+  const hex = String(pid || "").toLowerCase();
+  if (!/^[0-9a-f]{8}$/.test(hex)) return filename;
+  const slash = Math.max(filename.lastIndexOf("/"), filename.lastIndexOf("\\"));
+  const dir = slash >= 0 ? filename.slice(0, slash + 1) : "";
+  const base = slash >= 0 ? filename.slice(slash + 1) : filename;
+  const dot = base.lastIndexOf(".");
+  const ext = dot > 0 ? base.slice(dot) : "";
+  let stem = dot > 0 ? base.slice(0, dot) : base;
+  if (pidOf(base) === hex) return filename;
+  stem = stem.replace(/_PID_[0-9a-f]{8}/gi, "").replace(/[._\-\s]+$/g, "") || "clip";
+  return `${dir}${stem}_PID_${hex}${ext}`;
+}
+
+function mintPid(taken) {
+  const bytes = new Uint8Array(4);
+  crypto.getRandomValues(bytes);
+  let pid = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  while (taken.has(pid)) pid = (parseInt(pid, 16) + 1).toString(16).padStart(8, "0").slice(-8);
+  return pid;
+}
+
 function pairIdentity(a, b) {
   return a < b ? `${a}||${b}` : `${b}||${a}`;
 }
@@ -105,10 +133,47 @@ function cluster(items) {
     }
   }
   const edges = [];
+  const used = new Set();
+  const pairs = [];
+  const byPid = new Map();
+  canonical.forEach((item, index) => {
+    const pid = pidOf(item.name) || pidOf(item.path);
+    if (!pid) return;
+    const group = byPid.get(pid) || [];
+    group.push(index);
+    byPid.set(pid, group);
+  });
+  for (const [pid, indexes] of byPid) {
+    if (indexes.length < 2) continue;
+    const ordered = [...indexes].sort((i, j) => (canonical[i].width || 0) * (canonical[i].height || 0) - (canonical[j].width || 0) * (canonical[j].height || 0));
+    const source = ordered[0];
+    for (const other of ordered.slice(1)) {
+      used.add(source);
+      used.add(other);
+      const a = canonical[source];
+      const b = canonical[other];
+      const before = (a.width || 0) * (a.height || 0) <= (b.width || 0) * (b.height || 0) ? a : b;
+      const after = before === a ? b : a;
+      pairs.push({
+        id: pairIdentity(before.id, after.id),
+        beforeId: before.id,
+        afterId: after.id,
+        visual: 1,
+        nameMatch: true,
+        certain: true,
+        reason: `Same process id ${pid}. Already matched.`,
+      });
+    }
+  }
   for (let i = 0; i < canonical.length; i++) {
+    if (used.has(i)) continue;
     for (let j = i + 1; j < canonical.length; j++) {
+      if (used.has(j)) continue;
       const a = canonical[i];
       const b = canonical[j];
+      const pidA = pidOf(a.name) || pidOf(a.path);
+      const pidB = pidOf(b.name) || pidOf(b.path);
+      if (pidA && pidB && pidA !== pidB) continue;
       if (a.kind !== b.kind || !durationClose(a.duration, b.duration)) continue;
       const nameMatch = stemsMatch(a.name, b.name);
       const visual = visualScore(a, b);
@@ -117,8 +182,6 @@ function cluster(items) {
     }
   }
   edges.sort((a, b) => b.visual - a.visual || Number(b.nameMatch) - Number(a.nameMatch));
-  const used = new Set();
-  const pairs = [];
   for (const edge of edges) {
     if (used.has(edge.i) || used.has(edge.j)) continue;
     used.add(edge.i);
@@ -153,6 +216,7 @@ function cluster(items) {
       afterId: after.id,
       visual: edge.visual,
       nameMatch: edge.nameMatch,
+      certain: false,
       reason,
     });
   }
