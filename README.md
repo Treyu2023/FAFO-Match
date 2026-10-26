@@ -9,6 +9,16 @@ Review with a wipe, side by side, or a difference view. Lock the pair or mark it
 
 Nothing is uploaded. The server binds to `127.0.0.1:18766` and exits about 90 seconds after the page stops pinging.
 
+## Install on this PC
+
+From PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Treyu2023/FAFO-Match/main/Install.ps1 | iex
+```
+
+That downloads or updates [FAFO Match](https://github.com/Treyu2023/FAFO-Match) and the [toolbox](https://github.com/Treyu2023/FAFO-Power-Toolbox), then puts three shortcuts on the Desktop: **FAFO Match**, **Update FAFO**, and **AI HTML Toolbox**. Run it again any time. It will not delete a folder that is already there.
+
 ## Start
 
 Double-click **Start FAFO Match.bat**.

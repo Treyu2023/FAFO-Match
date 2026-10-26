@@ -8,6 +8,8 @@ const state = {
   selected: null,
   mode: "wipe",
   wipe: 56,
+  glance: 2,
+  autoWipe: false,
   server: false,
   note: "",
   working: "",
@@ -310,6 +312,7 @@ function bodyHtml(pairs, open, wasted) {
           ${["pairs", "copies", "alone"].map((tab) => `<button role="tab" data-tab="${tab}" aria-selected="${state.tab === tab}">${counts[tab]}</button>`).join("")}
         </div>
         <p class="hint">${state.tab === "pairs" ? (open ? `${open} still to check` : "All pairs checked") : state.tab === "copies" ? (wasted ? `${formatBytes(wasted)} if you keep every copy` : "No copies") : "No partner found"}</p>
+        ${state.items.some((item) => item.kind === "video") ? `<label class="row hint"><span id="glance-label">Look at ${state.glance.toFixed(1)}s</span><input id="glance" type="range" min="0" max="${Math.max(8, ...state.items.map((item) => item.duration || 0))}" step="0.1" value="${state.glance}" aria-label="Second to grab from every video"></label><p class="hint">Same moment in every clip. Hover a thumb to play two seconds.</p>` : ""}
         ${state.note ? `<p class="warn">${escapeHtml(state.note)}</p>` : ""}
         <div class="list">${listHtml(pairs)}</div>
       </div>
@@ -350,7 +353,8 @@ function listHtml(pairs) {
 }
 
 function thumb(item) {
-  return item?.thumb ? `<img alt="" src="${item.thumb}" />` : `<span class="ph"></span>`;
+  if (!item) return `<span class="ph"></span>`;
+  return `<span class="ph glance" data-id="${escapeAttr(item.id)}"></span>`;
 }
 
 function stageHtml(pairs) {
@@ -385,6 +389,7 @@ function stageHtml(pairs) {
       <div class="viewer" id="viewer"></div>
       <div class="row" style="margin-top:.6rem">
         ${before.kind === "video" || after?.kind === "video" ? `<button class="solid" id="play">Play</button>` : ""}
+        ${after && state.mode === "wipe" ? `<button class="quiet" id="autowipe">${state.autoWipe ? "Stop wipe" : "Auto wipe"}</button>` : ""}
         ${pair ? `<button class="solid" id="lock">${state.decisions[pair.id] === "locked" ? "Unlock" : "Lock pair"}</button><button class="quiet" id="swap">Swap</button><button class="quiet" id="reject">${state.decisions[pair.id] === "rejected" ? "Put back" : "Not a pair"}</button>` : ""}
         ${group && state.server ? `<button class="quiet" id="recycle">Recycle the copies</button>` : ""}
         <button class="texty" id="paths">Copy paths</button>
@@ -395,6 +400,7 @@ function stageHtml(pairs) {
 }
 
 function mountViewer() {
+  if (window.__fafoWipe) cancelAnimationFrame(window.__fafoWipe);
   const stage = document.querySelector(".stage");
   const viewer = document.querySelector("#viewer");
   if (!stage || !viewer) return;
@@ -409,6 +415,12 @@ function mountViewer() {
       el.preload = "auto";
     }
     el.src = url;
+    if (el.tagName === "VIDEO") {
+      el.addEventListener("loadedmetadata", () => {
+        const t = Math.min(state.glance, Math.max(0, (el.duration || state.glance) - 0.05));
+        el.currentTime = t;
+      }, { once: true });
+    }
     const cap = document.createElement("span");
     cap.className = `cap ${cls}`;
     cap.textContent = label;
@@ -436,11 +448,29 @@ function mountViewer() {
       range.className = "wipe";
       range.setAttribute("aria-label", "Wipe between before and after");
       range.addEventListener("input", () => {
+        state.autoWipe = false;
         state.wipe = Number(range.value);
         before.wrap.style.clipPath = `inset(0 ${100 - state.wipe}% 0 0)`;
         line.style.left = `${state.wipe}%`;
       });
       viewer.append(line, range);
+      if (state.autoWipe) {
+        if (window.__fafoWipe) cancelAnimationFrame(window.__fafoWipe);
+        let dir = 1;
+        let last = performance.now();
+        const tick = (now) => {
+          const dt = Math.min(0.05, (now - last) / 1000);
+          last = now;
+          state.wipe += dir * dt * 40;
+          if (state.wipe >= 92) { state.wipe = 92; dir = -1; }
+          else if (state.wipe <= 8) { state.wipe = 8; dir = 1; }
+          before.wrap.style.clipPath = `inset(0 ${100 - state.wipe}% 0 0)`;
+          line.style.left = `${state.wipe}%`;
+          range.value = String(Math.round(state.wipe));
+          window.__fafoWipe = requestAnimationFrame(tick);
+        };
+        window.__fafoWipe = requestAnimationFrame(tick);
+      }
     }
   } else if (state.mode === "split") {
     viewer.style.display = "grid";
@@ -490,6 +520,50 @@ function bind() {
     if (locking) stampSelected();
     render();
   });
+  document.querySelector("#autowipe")?.addEventListener("click", () => {
+    state.autoWipe = !state.autoWipe;
+    render();
+  });
+  document.querySelector("#glance")?.addEventListener("input", (event) => {
+    state.glance = Number(event.target.value);
+    const label = document.querySelector("#glance-label");
+    if (label) label.textContent = `Look at ${state.glance.toFixed(1)}s`;
+  });
+  document.querySelector("#glance")?.addEventListener("change", () => fillGlances());
+  document.querySelector(".list")?.addEventListener("mouseover", (event) => {
+    const node = event.target.closest(".glance");
+    if (!node || node.dataset.playing === "1") return;
+    const item = byId(node.dataset.id);
+    if (!item || item.kind !== "video") return;
+    node.dataset.playing = "1";
+    const still = node.innerHTML;
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.className = "ph";
+    const url = mediaUrl(item);
+    video.src = url;
+    node.innerHTML = "";
+    node.append(video);
+    const stop = () => {
+      node.dataset.playing = "";
+      video.pause();
+      video.src = "";
+      if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+      node.innerHTML = still;
+      node.removeEventListener("mouseleave", stop);
+    };
+    node.addEventListener("mouseleave", stop);
+    video.addEventListener("loadedmetadata", () => {
+      const start = Math.min(state.glance, Math.max(0, (video.duration || state.glance) - 0.05));
+      video.currentTime = start;
+      video.addEventListener("seeked", () => video.play().catch(() => {}), { once: true });
+      video.ontimeupdate = () => {
+        if (video.currentTime > start + 2) video.currentTime = start;
+      };
+    }, { once: true });
+  });
+  fillGlances();
   document.querySelector("#swap")?.addEventListener("click", () => {
     state.flips[state.selected] = !state.flips[state.selected];
     render();
@@ -512,6 +586,62 @@ function bind() {
     render();
   }));
   mountViewer();
+}
+
+const glanceCache = new Map();
+let glanceToken = 0;
+function fillGlances() {
+  const token = ++glanceToken;
+  const nodes = [...document.querySelectorAll(".glance")];
+  let index = 0;
+  const step = () => {
+    if (token !== glanceToken) return;
+    const node = nodes[index++];
+    if (!node) return;
+    const item = byId(node.dataset.id);
+    if (!item || item.kind !== "video") {
+      if (item?.thumb) node.innerHTML = `<img alt="" src="${item.thumb}">`;
+      step();
+      return;
+    }
+    const key = `${item.id}:${state.glance.toFixed(1)}`;
+    if (glanceCache.has(key)) {
+      node.innerHTML = `<img alt="" src="${glanceCache.get(key)}">`;
+      step();
+      return;
+    }
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    const url = mediaUrl(item);
+    video.preload = "auto";
+    video.src = url;
+    const finish = (data) => {
+      if (data) glanceCache.set(key, data);
+      if (token === glanceToken && data) node.innerHTML = `<img alt="" src="${data}">`;
+      video.src = "";
+      if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+      step();
+    };
+    video.onerror = () => finish("");
+    video.onloadeddata = () => {
+      const t = Math.min(state.glance, Math.max(0, (video.duration || state.glance) - 0.05));
+      if (Math.abs(video.currentTime - t) < 0.05) {
+        paint();
+        return;
+      }
+      video.onseeked = paint;
+      video.currentTime = t;
+    };
+    const paint = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 160;
+      canvas.height = 90;
+      canvas.getContext("2d")?.drawImage(video, 0, 0, 160, 90);
+      finish(canvas.toDataURL("image/jpeg", 0.55));
+    };
+  };
+  step();
 }
 
 async function recycleCopies() {
