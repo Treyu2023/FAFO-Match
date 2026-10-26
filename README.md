@@ -17,7 +17,7 @@ From PowerShell:
 irm https://raw.githubusercontent.com/Treyu2023/FAFO-Match/main/Install.ps1 | iex
 ```
 
-That downloads or updates [FAFO Match](https://github.com/Treyu2023/FAFO-Match) and the [toolbox](https://github.com/Treyu2023/FAFO-Power-Toolbox), then puts three shortcuts on the Desktop: **FAFO Match**, **Update FAFO**, and **AI HTML Toolbox**. Run it again any time. It will not delete a folder that is already there.
+That downloads or updates [FAFO Match](https://github.com/Treyu2023/FAFO-Match) at `C:\_git\FAFO-Match` and puts two shortcuts on the Desktop: **FAFO Match** and **Update FAFO Match**. It does not download or change the toolbox. Run it again any time. It will not delete a folder that is already there.
 
 ## Start
 

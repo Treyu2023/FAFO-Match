@@ -1,4 +1,5 @@
-# Downloads or updates FAFO Match and the FAFO Power Toolbox, then puts shortcuts on the Desktop.
+# Downloads or updates FAFO Match only, then puts a Desktop shortcut on this PC.
+# Does not clone or update the toolbox.
 # Safe to run again. It will not delete a folder that is already there.
 # One line from PowerShell:
 #   irm https://raw.githubusercontent.com/Treyu2023/FAFO-Match/main/Install.ps1 | iex
@@ -77,26 +78,8 @@ function New-DesktopShortcut([string]$Name, [string]$Target, [string]$WorkDir, [
 }
 
 Write-Host ""
-Write-Host "FAFO install" -ForegroundColor Cyan
-
-$toolbox = $null
-foreach ($candidate in @(
-    'C:\_git\HTMLPROJECTS',
-    'C:\_git\FAFO-Power-Toolbox',
-    (Join-Path $env:USERPROFILE 'HTMLPROJECTS')
-)) {
-    if (Test-Path -LiteralPath (Join-Path $candidate 'Toolbox Launcher.html')) {
-        $toolbox = $candidate
-        break
-    }
-}
-if (-not $toolbox) { $toolbox = 'C:\_git\FAFO-Power-Toolbox' }
-
-Update-Repo `
-    -Url 'https://github.com/Treyu2023/FAFO-Power-Toolbox.git' `
-    -Dest $toolbox `
-    -Marker 'Toolbox Launcher.html' `
-    -ZipUrl 'https://github.com/Treyu2023/FAFO-Power-Toolbox/archive/refs/heads/main.zip' | Out-Null
+Write-Host "FAFO Match install" -ForegroundColor Cyan
+Write-Host "Toolbox is left alone."
 
 $match = Update-Repo `
     -Url 'https://github.com/Treyu2023/FAFO-Match.git' `
@@ -109,18 +92,12 @@ New-DesktopShortcut -Name 'FAFO Match' -Target $matchBat -WorkDir $match -Argume
 
 $installScript = Join-Path $match 'Install.ps1'
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-New-DesktopShortcut -Name 'Update FAFO' -Target $powershell -WorkDir $match `
+New-DesktopShortcut -Name 'Update FAFO Match' -Target $powershell -WorkDir $match `
     -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installScript`"" `
-    -Description 'Pull the latest FAFO Match and toolbox, then refresh the desktop shortcuts.'
-
-$launch = Join-Path $toolbox 'Launch-AI-HTML-Toolbox.bat'
-if (Test-Path -LiteralPath $launch) {
-    New-DesktopShortcut -Name 'AI HTML Toolbox' -Target $launch -WorkDir $toolbox -Arguments '' -Description 'AI HTML Toolbox'
-}
+    -Description 'Pull the latest FAFO Match and refresh the desktop shortcut.'
 
 Write-Host ""
 Write-Host "Done."
 Write-Host "  FAFO Match:  $match"
-Write-Host "  Toolbox:     $toolbox"
-Write-Host "Desktop shortcuts: FAFO Match, Update FAFO, AI HTML Toolbox"
+Write-Host "Desktop shortcuts: FAFO Match, Update FAFO Match"
 Write-Host ""
