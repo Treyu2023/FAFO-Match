@@ -237,7 +237,7 @@ async function scanFolder() {
   for (;;) {
     const res = await fetch(`${API}/api/scan`);
     const job = await res.json();
-    state.working = job.phase === "done" ? "" : `Scanning ${job.done || 0} of ${job.total || 0}`;
+    state.working = job.phase === "done" ? "" : `Scanning ${job.done || 0} of ${job.total || 0}${job.file ? ` · ${job.file}` : ""}`;
     if (job.phase === "done" || job.phase === "error") {
       const items = (job.items || []).map((item) => ({ ...item, id: idOf(item), thumb: "" }));
       state.items = items;
@@ -256,7 +256,10 @@ async function scanFolder() {
 }
 
 function mediaUrl(item) {
-  if (item.file) return URL.createObjectURL(item.file);
+  if (item.file) {
+    if (!item._url) item._url = URL.createObjectURL(item.file);
+    return item._url;
+  }
   if (state.server && item.path) return `${API}/media?path=${encodeURIComponent(item.path)}`;
   return "";
 }
@@ -312,7 +315,7 @@ function bodyHtml(pairs, open, wasted) {
           ${["pairs", "copies", "alone"].map((tab) => `<button role="tab" data-tab="${tab}" aria-selected="${state.tab === tab}">${counts[tab]}</button>`).join("")}
         </div>
         <p class="hint">${state.tab === "pairs" ? (open ? `${open} still to check` : "All pairs checked") : state.tab === "copies" ? (wasted ? `${formatBytes(wasted)} if you keep every copy` : "No copies") : "No partner found"}</p>
-        ${state.items.some((item) => item.kind === "video") ? `<label class="row hint"><span id="glance-label">Look at ${state.glance.toFixed(1)}s</span><input id="glance" type="range" min="0" max="${Math.max(8, ...state.items.map((item) => item.duration || 0))}" step="0.1" value="${state.glance}" aria-label="Second to grab from every video"></label><p class="hint">Same moment in every clip. Hover a thumb to play two seconds.</p>` : ""}
+        ${state.items.some((item) => item.kind === "video") ? `<label class="row hint"><span id="glance-label">Look at ${state.glance.toFixed(1)}s</span><input id="glance" type="range" min="0" max="${Math.max(8, ...state.items.map((item) => item.duration || 0))}" step="0.1" value="${state.glance}" aria-label="Second to grab from every video"></label><p class="hint">Same moment in every clip. A pair still plays if one side does not load.</p>` : ""}
         ${state.note ? `<p class="warn">${escapeHtml(state.note)}</p>` : ""}
         <div class="list">${listHtml(pairs)}</div>
       </div>
@@ -400,7 +403,7 @@ function stageHtml(pairs) {
 }
 
 function mountViewer() {
-  if (window.__fafoWipe) cancelAnimationFrame(window.__fafoWipe);
+  if (window.__fafoStop) window.__fafoStop();
   const stage = document.querySelector(".stage");
   const viewer = document.querySelector("#viewer");
   if (!stage || !viewer) return;
@@ -412,18 +415,25 @@ function mountViewer() {
     if (el.tagName === "VIDEO") {
       el.muted = true;
       el.playsInline = true;
-      el.preload = "auto";
+      el.preload = "metadata";
     }
     el.src = url;
-    if (el.tagName === "VIDEO") {
-      el.addEventListener("loadedmetadata", () => {
-        const t = Math.min(state.glance, Math.max(0, (el.duration || state.glance) - 0.05));
-        el.currentTime = t;
-      }, { once: true });
-    }
     const cap = document.createElement("span");
     cap.className = `cap ${cls}`;
     cap.textContent = label;
+    if (el.tagName === "VIDEO") {
+      el.addEventListener("loadedmetadata", () => {
+        const t = Math.min(state.glance, Math.max(0, (el.duration || state.glance) - 0.05));
+        if (Math.abs(el.currentTime - t) > 0.05) el.currentTime = t;
+      }, { once: true });
+      el.addEventListener("error", () => {
+        el.dataset.dead = "1";
+        const ext = (url.split("?")[0].match(/\.([a-z0-9]+)$/i) || [, ""])[1].toLowerCase();
+        cap.textContent = ext === "mkv" || ext === "avi"
+          ? `${label} — this browser can't play .${ext}`
+          : `${label} — didn't load`;
+      });
+    }
     const wrap = document.createElement("div");
     wrap.className = "clip";
     wrap.append(el, cap);
@@ -432,6 +442,7 @@ function mountViewer() {
   const before = make(beforeUrl, stage.dataset.bk, document.querySelector("#lock") ? "Before" : "Keep", "before");
   const after = afterUrl ? make(afterUrl, stage.dataset.ak, document.querySelector("#lock") ? "After" : "Copy", "after") : null;
   if (!before) return;
+  let stopDraw = () => {};
   if (!after || state.mode === "wipe") {
     if (after) viewer.append(after.wrap);
     before.wrap.style.clipPath = after && state.mode === "wipe" ? `inset(0 ${100 - state.wipe}% 0 0)` : "";
@@ -455,9 +466,9 @@ function mountViewer() {
       });
       viewer.append(line, range);
       if (state.autoWipe) {
-        if (window.__fafoWipe) cancelAnimationFrame(window.__fafoWipe);
         let dir = 1;
         let last = performance.now();
+        let frame = 0;
         const tick = (now) => {
           const dt = Math.min(0.05, (now - last) / 1000);
           last = now;
@@ -467,21 +478,89 @@ function mountViewer() {
           before.wrap.style.clipPath = `inset(0 ${100 - state.wipe}% 0 0)`;
           line.style.left = `${state.wipe}%`;
           range.value = String(Math.round(state.wipe));
-          window.__fafoWipe = requestAnimationFrame(tick);
+          frame = requestAnimationFrame(tick);
         };
-        window.__fafoWipe = requestAnimationFrame(tick);
+        frame = requestAnimationFrame(tick);
+        stopDraw = () => cancelAnimationFrame(frame);
       }
     }
   } else if (state.mode === "split") {
     viewer.style.display = "grid";
     viewer.style.gridTemplateColumns = "1fr 1fr";
     viewer.append(before.wrap, after.wrap);
+  } else {
+    before.wrap.classList.add("ghost");
+    after.wrap.classList.add("ghost");
+    viewer.append(before.wrap, after.wrap);
+    const canvas = document.createElement("canvas");
+    canvas.className = "diff";
+    viewer.append(canvas);
+    const ctx = canvas.getContext("2d", { alpha: false });
+    let frame = 0;
+    let playing = false;
+    const ready = (el) => el && el.dataset.dead !== "1" && ((el.tagName === "VIDEO" && el.readyState >= 2) || (el.tagName === "IMG" && el.complete));
+    const draw = () => {
+      const w = viewer.clientWidth || 16;
+      const h = viewer.clientHeight || 9;
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = "#0e0e0c";
+      ctx.fillRect(0, 0, w, h);
+      if (ready(before.el)) ctx.drawImage(before.el, 0, 0, w, h);
+      if (ready(after.el)) {
+        ctx.globalCompositeOperation = "difference";
+        ctx.drawImage(after.el, 0, 0, w, h);
+        ctx.globalCompositeOperation = "source-over";
+      }
+      if (playing) frame = requestAnimationFrame(draw);
+    };
+    const watch = [before.el, after.el].filter((el) => el && el.tagName === "VIDEO");
+    watch.forEach((el) => {
+      el.addEventListener("play", () => { playing = true; draw(); });
+      el.addEventListener("pause", () => { playing = false; cancelAnimationFrame(frame); draw(); });
+      el.addEventListener("seeked", () => { if (!playing) draw(); });
+    });
+    draw();
+    stopDraw = () => { playing = false; cancelAnimationFrame(frame); };
   }
-  const play = document.querySelector("#play");
-  play?.addEventListener("click", async () => {
-    const videos = [...viewer.querySelectorAll("video")];
-    if (videos.some((video) => !video.paused)) videos.forEach((video) => video.pause());
-    else await Promise.all(videos.map((video) => video.play()));
+  window.__fafoStop = stopDraw;
+  if (before.el.tagName === "VIDEO" && after && after.el.tagName === "VIDEO") {
+    const master = before.el;
+    const slave = after.el;
+    let fixing = false;
+    const align = (force) => {
+      if (slave.dataset.dead === "1" || master.dataset.dead === "1" || fixing) return;
+      const drift = slave.currentTime - master.currentTime;
+      if (force || Math.abs(drift) > 0.35) {
+        fixing = true;
+        const done = () => { fixing = false; slave.removeEventListener("seeked", done); };
+        slave.addEventListener("seeked", done);
+        try { slave.currentTime = master.currentTime; } catch { fixing = false; }
+        return;
+      }
+      if (!slave.paused && Math.abs(drift) > 0.08) slave.playbackRate = drift > 0 ? 0.97 : 1.03;
+      else slave.playbackRate = 1;
+    };
+    master.addEventListener("timeupdate", () => align(false));
+    master.addEventListener("seeked", () => align(true));
+    master.addEventListener("play", () => { if (slave.dataset.dead !== "1") slave.play().catch(() => {}); });
+    master.addEventListener("pause", () => slave.pause());
+  }
+  document.querySelector("#play")?.addEventListener("click", async () => {
+    const videos = [...viewer.querySelectorAll("video")].filter((video) => video.dataset.dead !== "1");
+    if (!videos.length) return;
+    if (videos.some((video) => !video.paused)) {
+      videos.forEach((video) => video.pause());
+      return;
+    }
+    const at = videos[0].currentTime || 0;
+    videos.forEach((video) => {
+      if (Math.abs((video.currentTime || 0) - at) > 0.25) video.currentTime = at;
+    });
+    await Promise.all(videos.map((video) => video.play().catch(() => {})));
   });
 }
 
@@ -530,39 +609,6 @@ function bind() {
     if (label) label.textContent = `Look at ${state.glance.toFixed(1)}s`;
   });
   document.querySelector("#glance")?.addEventListener("change", () => fillGlances());
-  document.querySelector(".list")?.addEventListener("mouseover", (event) => {
-    const node = event.target.closest(".glance");
-    if (!node || node.dataset.playing === "1") return;
-    const item = byId(node.dataset.id);
-    if (!item || item.kind !== "video") return;
-    node.dataset.playing = "1";
-    const still = node.innerHTML;
-    const video = document.createElement("video");
-    video.muted = true;
-    video.playsInline = true;
-    video.className = "ph";
-    const url = mediaUrl(item);
-    video.src = url;
-    node.innerHTML = "";
-    node.append(video);
-    const stop = () => {
-      node.dataset.playing = "";
-      video.pause();
-      video.src = "";
-      if (url.startsWith("blob:")) URL.revokeObjectURL(url);
-      node.innerHTML = still;
-      node.removeEventListener("mouseleave", stop);
-    };
-    node.addEventListener("mouseleave", stop);
-    video.addEventListener("loadedmetadata", () => {
-      const start = Math.min(state.glance, Math.max(0, (video.duration || state.glance) - 0.05));
-      video.currentTime = start;
-      video.addEventListener("seeked", () => video.play().catch(() => {}), { once: true });
-      video.ontimeupdate = () => {
-        if (video.currentTime > start + 2) video.currentTime = start;
-      };
-    }, { once: true });
-  });
   fillGlances();
   document.querySelector("#swap")?.addEventListener("click", () => {
     state.flips[state.selected] = !state.flips[state.selected];
@@ -601,6 +647,12 @@ function fillGlances() {
     const item = byId(node.dataset.id);
     if (!item || item.kind !== "video") {
       if (item?.thumb) node.innerHTML = `<img alt="" src="${item.thumb}">`;
+      step();
+      return;
+    }
+    if (state.server && item.path && !item.file) {
+      const src = `${API}/thumb?path=${encodeURIComponent(item.path)}&t=${state.glance.toFixed(1)}`;
+      node.innerHTML = `<img alt="" src="${src}">`;
       step();
       return;
     }

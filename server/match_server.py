@@ -17,6 +17,7 @@ import subprocess
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -29,6 +30,21 @@ WEB = ROOT / "web"
 VIDEO = {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".ogv"}
 IMAGE = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 SKIP = {"thumbs.db", ".ds_store", "desktop.ini"}
+MIME = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+    ".ogv": "video/ogg",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
 
 _lock = threading.Lock()
 _last_ping = time.time()
@@ -45,70 +61,123 @@ def ffmpeg_bin() -> str | None:
     return shutil.which("ffmpeg")
 
 
-def ffprobe_bin() -> str | None:
-    return shutil.which("ffprobe")
+def parse_byte_range(header: str | None, size: int) -> tuple[int, int] | None:
+    """Inclusive byte range. None means send the whole file. ValueError means 416."""
+    if size <= 0 or not header or not header.lower().startswith("bytes="):
+        return None
+    spec = header.split("=", 1)[1].split(",")[0].strip()
+    if "-" not in spec:
+        return None
+    start_s, end_s = spec.split("-", 1)
+    if start_s == "" and end_s == "":
+        return None
+    if start_s == "":
+        length = int(end_s)
+        if length <= 0:
+            raise ValueError("empty")
+        start = max(0, size - length)
+        end = size - 1
+    else:
+        start = int(start_s)
+        end = int(end_s) if end_s else size - 1
+    if start >= size or end < start or start < 0:
+        raise ValueError("unsatisfiable")
+    return start, min(end, size - 1)
 
 
-def duration_of(path: Path) -> float:
-    probe = ffprobe_bin()
-    if not probe:
-        return 0.0
-    try:
-        out = subprocess.check_output(
-            [
-                probe,
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "csv=p=0",
-                str(path),
-            ],
-            stderr=subprocess.DEVNULL,
-            timeout=20,
-        )
-        return max(0.0, float(out.decode().strip() or 0))
-    except Exception:
-        return 0.0
+def content_type(path: Path) -> str:
+    return MIME.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
 
-def mosaics_of(path: Path, duration: float) -> list[list[int]]:
+def grab_mosaic(path: Path, kind: str) -> list[list[int]]:
+    """A few tiny frames from the start of the file. Never seeks to the end."""
     ffmpeg = ffmpeg_bin()
     if not ffmpeg:
         return []
-    stamps = [0.2, 0.5, 0.8] if duration <= 0 else [duration * t for t in (0.2, 0.5, 0.8)]
+    cmd = [
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-analyzeduration",
+        "2000000",
+        "-probesize",
+        "5000000",
+    ]
+    if kind == "video":
+        cmd += ["-ss", "0.2"]
+    cmd += [
+        "-i",
+        str(path),
+        "-an",
+        "-sn",
+        "-dn",
+        "-frames:v",
+        "3" if kind == "video" else "1",
+        "-vf",
+        "fps=2,scale=16:9:flags=fast_bilinear" if kind == "video" else "scale=16:9:flags=fast_bilinear",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "gray",
+        "-",
+    ]
+    try:
+        raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=8)
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError):
+        return []
     frames: list[list[int]] = []
-    for stamp in stamps:
-        try:
-            raw = subprocess.check_output(
-                [
-                    ffmpeg,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-ss",
-                    f"{max(0.0, stamp):.3f}",
-                    "-i",
-                    str(path),
-                    "-frames:v",
-                    "1",
-                    "-vf",
-                    "scale=16:9",
-                    "-f",
-                    "rawvideo",
-                    "-pix_fmt",
-                    "gray",
-                    "-",
-                ],
-                stderr=subprocess.DEVNULL,
-                timeout=30,
-            )
-        except Exception:
-            continue
-        if len(raw) >= 144:
-            frames.append([int(b) for b in raw[:144]])
+    for offset in range(0, len(raw) - 143, 144):
+        frames.append([int(b) for b in raw[offset : offset + 144]])
+        if len(frames) == 3:
+            break
     return frames
+
+
+_thumbs: dict[tuple, bytes] = {}
+
+
+def thumb_jpeg(path: Path, stamp: float) -> bytes | None:
+    key = (str(path), path.stat().st_mtime_ns, round(stamp, 1))
+    cached = _thumbs.get(key)
+    if cached is not None:
+        return cached
+    ffmpeg = ffmpeg_bin()
+    if not ffmpeg:
+        return None
+    cmd = [
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{max(0.0, stamp):.3f}",
+        "-i",
+        str(path),
+        "-an",
+        "-sn",
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=160:-2:flags=fast_bilinear",
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "mjpeg",
+        "-",
+    ]
+    try:
+        raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=6)
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError):
+        return None
+    if not raw:
+        return None
+    if len(_thumbs) > 400:
+        _thumbs.clear()
+    _thumbs[key] = raw
+    return raw
 
 
 def byte_hash(path: Path, size: int) -> str:
@@ -160,41 +229,52 @@ def scan(folder: str) -> None:
             ext = Path(name).suffix.lower()
             if ext in VIDEO or ext in IMAGE:
                 files.append(Path(dirpath) / name)
-    items = []
+    items: list[dict] = []
     total = len(files)
-    with _lock:
-        _allowed.add(root)
-        _job = {"phase": "scan", "done": 0, "total": total, "items": [], "error": "", "root": str(root)}
-    for index, path in enumerate(files, start=1):
+
+    def one(index: int, path: Path) -> dict | None:
         try:
             stat = path.stat()
-            kind = "video" if path.suffix.lower() in VIDEO else "image"
-            dur = duration_of(path) if kind == "video" else 0.0
-            mosaics = mosaics_of(path, dur) if kind == "video" else []
-            if kind == "image" and ffmpeg_bin():
-                mosaics = mosaics_of(path, 0)
-            items.append(
-                {
-                    "name": path.name,
-                    "path": str(path),
-                    "size": stat.st_size,
-                    "mtime": int(stat.st_mtime * 1000),
-                    "kind": kind,
-                    "duration": dur,
-                    "byteHash": byte_hash(path, stat.st_size),
-                    "mosaics": mosaics,
-                    "dhashes": [],
-                    "width": 0,
-                    "height": 0,
-                }
-            )
         except OSError:
-            continue
-        if index % 5 == 0 or index == total:
-            with _lock:
-                _job = {**_job, "phase": "scan", "done": index, "total": total, "items": items}
+            return None
+        kind = "video" if path.suffix.lower() in VIDEO else "image"
+        return {
+            "index": index,
+            "name": path.name,
+            "path": str(path),
+            "size": stat.st_size,
+            "mtime": int(stat.st_mtime * 1000),
+            "kind": kind,
+            "duration": 0.0,
+            "byteHash": byte_hash(path, stat.st_size),
+            "mosaics": grab_mosaic(path, kind),
+            "dhashes": [],
+            "width": 0,
+            "height": 0,
+        }
+
     with _lock:
-        _job = {**_job, "phase": "done", "done": total, "total": total, "items": items, "ffmpeg": bool(ffmpeg_bin())}
+        _allowed.add(root)
+        _job = {"phase": "scan", "done": 0, "total": total, "items": [], "error": "", "root": str(root), "file": ""}
+    done = 0
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(one, index, path): path for index, path in enumerate(files, start=1)}
+        for future in as_completed(futures):
+            path = futures[future]
+            done += 1
+            try:
+                item = future.result()
+            except Exception:
+                item = None
+            if item:
+                items.append(item)
+            with _lock:
+                _job = {**_job, "phase": "scan", "done": done, "total": total, "file": path.name, "items": []}
+    items.sort(key=lambda item: item.get("index", 0))
+    for item in items:
+        item.pop("index", None)
+    with _lock:
+        _job = {**_job, "phase": "done", "done": total, "total": total, "file": "", "items": items, "ffmpeg": bool(ffmpeg_bin())}
 
 
 def stamp_name(name: str, pid: str) -> str:
@@ -322,17 +402,94 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, snap)
             return
         if parsed.path == "/media":
-            query = parse_qs(parsed.query)
-            raw = (query.get("path") or [""])[0]
-            path = safe_path(raw)
-            if path is None:
-                self._json(404, {"error": "That file is not in a folder you scanned."})
-                return
-            ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-            data = path.read_bytes()
-            self._send(200, data, ctype)
+            self._serve_media(parsed, write_body=True)
+            return
+        if parsed.path == "/thumb":
+            self._serve_thumb(parsed)
             return
         self._json(404, {"error": "not found"})
+
+    def do_HEAD(self) -> None:
+        touch()
+        parsed = urlparse(self.path)
+        if parsed.path == "/media":
+            self._serve_media(parsed, write_body=False)
+            return
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _serve_thumb(self, parsed) -> None:
+        query = parse_qs(parsed.query)
+        path = safe_path((query.get("path") or [""])[0])
+        if path is None:
+            self._json(404, {"error": "That file is not in a folder you scanned."})
+            return
+        try:
+            stamp = float((query.get("t") or ["0.4"])[0])
+        except ValueError:
+            stamp = 0.4
+        data = thumb_jpeg(path, stamp)
+        if not data:
+            self._json(404, {"error": "No still for that file."})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, max-age=86400")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except OSError:
+            return
+
+    def _serve_media(self, parsed, write_body: bool) -> None:
+        query = parse_qs(parsed.query)
+        path = safe_path((query.get("path") or [""])[0])
+        if path is None:
+            self._json(404, {"error": "That file is not in a folder you scanned."})
+            return
+        try:
+            size = path.stat().st_size
+        except OSError:
+            self._json(404, {"error": "That file is not in a folder you scanned."})
+            return
+        try:
+            span = parse_byte_range(self.headers.get("Range"), size)
+        except ValueError:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        start, end = (0, max(0, size - 1)) if span is None else span
+        length = 0 if size == 0 else end - start + 1
+        status = 206 if span is not None else 200
+        self.send_response(status)
+        self.send_header("Content-Type", content_type(path))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.end_headers()
+        if not write_body or length <= 0:
+            return
+        try:
+            with path.open("rb") as handle:
+                handle.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = handle.read(min(256 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except OSError:
+            return
 
     def do_POST(self) -> None:
         touch()
@@ -353,6 +510,7 @@ class Handler(BaseHTTPRequestHandler):
             paths = body.get("paths") if isinstance(body.get("paths"), list) else []
             self._json(200, stamp_files(str(body.get("pid") or ""), [str(p) for p in paths]))
             return
+        if parsed.path == "/api/recycle":
             paths = body.get("paths") if isinstance(body.get("paths"), list) else []
             self._json(200, recycle([str(p) for p in paths]))
             return
